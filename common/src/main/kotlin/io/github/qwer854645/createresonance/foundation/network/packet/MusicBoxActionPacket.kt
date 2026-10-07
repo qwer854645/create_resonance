@@ -76,9 +76,8 @@ class MusicBoxActionPacket(
                         }
                         // list containing a negative value means "all parts"
                     }
-                    if (instrumentProgram >= 0) {
-                        behaviour.instrumentProgram = GeneralMidiInstruments.clamp(instrumentProgram)
-                    }
+                    // -1 = score-native instruments; 0–127 = forced GM program.
+                    behaviour.instrumentProgram = GeneralMidiInstruments.normalize(instrumentProgram)
                 }
                 be.notifyUpdate()
                 be.sendData()

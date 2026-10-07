@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$env:JAVA_HOME = "C:\Program Files\Java\jdk-22"
+$env:JAVA_HOME = "C:\Program Files\Java\jdk-21"
 $gradle = "f:\others\_tools\gradle-9.4.1\bin\gradle.bat"
 $project = "f:\others\create_harmonics_unofficial"
 

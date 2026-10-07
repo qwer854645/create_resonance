@@ -146,8 +146,8 @@ class MusicBoxScreen(
                     it.setToolTip(Component.translatable("create_resonance.gui.music_box.instrument_prev"))
                 },
             )
-            val prog = GeneralMidiInstruments.clamp(behaviour.instrumentProgram)
-            val name = truncate(GeneralMidiInstruments.displayName(prog).string, 14)
+            val name =
+                truncate(GeneralMidiInstruments.displayName(behaviour.instrumentProgram).string, 14)
             addRenderableWidget(
                 Button
                     .builder(
@@ -219,11 +219,8 @@ class MusicBoxScreen(
     }
 
     private fun cycleInstrument(delta: Int) {
-        val next =
-            GeneralMidiInstruments.clamp(
-                (behaviour.instrumentProgram + delta).mod(GeneralMidiInstruments.COUNT),
-            )
-        behaviour.instrumentProgram = next
+        behaviour.instrumentProgram =
+            GeneralMidiInstruments.cycle(behaviour.instrumentProgram, delta)
         sendConfig()
         rebuildWidgets()
     }

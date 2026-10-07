@@ -353,7 +353,10 @@ class MusicBoxBehaviour(
         private set
     var role: MusicBoxRole = MusicBoxRole.SOLO
     var sectionChannels: MutableSet<Int> = mutableSetOf() // empty = all parts
-    /** GM program 0–127 — all notes play with this single instrument. */
+    /**
+     * GM program 0–127 forces a single instrument; [GeneralMidiInstruments.SCORE_PROGRAM]
+     * keeps each MIDI channel's instruments from the score.
+     */
     var instrumentProgram: Int = GeneralMidiInstruments.DEFAULT_PROGRAM
 
     val isConductorBlock: Boolean
@@ -1009,7 +1012,13 @@ class MusicBoxBehaviour(
         } else {
             player.setChannelFilter(sectionChannels.toSet())
         }
-        player.setForcedProgram(instrumentProgram)
+        player.setForcedProgram(
+            if (GeneralMidiInstruments.isScoreNative(instrumentProgram)) {
+                null
+            } else {
+                instrumentProgram
+            },
+        )
         // Conductor stays silent but still runs the sequencer so the GUI can show progress.
         player.setMuted(silentConductor)
 
@@ -1248,7 +1257,7 @@ class MusicBoxBehaviour(
         conductOnly = compound.getBoolean("ConductOnly")
         instrumentProgram =
             if (compound.contains("InstrumentProgram")) {
-                GeneralMidiInstruments.clamp(compound.getInt("InstrumentProgram"))
+                GeneralMidiInstruments.normalize(compound.getInt("InstrumentProgram"))
             } else {
                 GeneralMidiInstruments.DEFAULT_PROGRAM
             }

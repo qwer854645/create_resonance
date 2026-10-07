@@ -612,7 +612,10 @@ abstract class DepotLikeBehaviour(
 
         if (processOnlyData(currentHeldItem)) {
             val processedStack = processData(currentHeldItem).copy()
-            heldItem = null
+            // processData may split(1) from a blank stack — keep leftovers on the pad.
+            if (currentHeldItem.stack.isEmpty) {
+                heldItem = null
+            }
             val remainder = ItemHandlerHelper.insertItemStacked(processingOutputBuffer, processedStack, false)
             val vec = VecHelper.getCenterOf(blockEntity.blockPos)
             val level = blockEntity.level ?: return

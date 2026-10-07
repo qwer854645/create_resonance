@@ -136,12 +136,11 @@ class RecordPressBaseBehaviour(
         input.stack.item is ResonanceDiscItem
 
     override fun processData(input: TransportedItemStack): ItemStack {
-        input.stack.let {
-            if (it.item is ResonanceDiscItem) {
-                assignUrlToItem(it)
-            }
-        }
-        return input.stack
+        if (input.stack.item !is ResonanceDiscItem) return input.stack
+        // Imprint one disc from a blank stack; leftovers stay on the pad.
+        val one = input.stack.split(1)
+        assignUrlToItem(one)
+        return one
     }
 
     override fun write(

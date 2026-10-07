@@ -1,6 +1,9 @@
 package io.github.qwer854645.createresonance.content.records
 
+import com.simibubi.create.AllKeys
+import com.simibubi.create.foundation.item.TooltipHelper
 import io.github.qwer854645.createresonance.handler.RecordCraftingHandler
+import net.createmod.catnip.lang.FontHelper
 import net.minecraft.ChatFormatting
 import net.minecraft.core.component.DataComponents
 import net.minecraft.core.registries.BuiltInRegistries
@@ -21,19 +24,16 @@ class ResonanceDiscItem(
                     stack.has(DataComponents.JUKEBOX_PLAYABLE)
                 }.toList()
         }
-
-        private fun truncateUrl(url: String, max: Int = 48): String =
-            if (url.length <= max) url else url.take(max - 1) + "…"
     }
 
     override fun getDefaultInstance(): ItemStack {
         val default = super.getDefaultInstance()
 
+        // Stable vanity disc so creative / default blanks can stack together.
         if (JUKEBOX_DISCS.isNotEmpty()) {
-            val randomDisc = JUKEBOX_DISCS.random()
             RecordCraftingHandler.setCraftedWithDisc(
                 default,
-                ItemStack(randomDisc),
+                ItemStack(JUKEBOX_DISCS.first()),
             )
         }
 
@@ -56,19 +56,14 @@ class ResonanceDiscItem(
                     .translatable("create_resonance.tooltips.item.resonance_disc.url_bound")
                     .withStyle(ChatFormatting.AQUA),
             )
-            // Keep this method free of net.minecraft.client.* so the item class can load on
-            // dedicated servers. Full URL is shown with advanced tooltips (F3+H).
-            if (isAdvanced.isAdvanced) {
-                tooltipComponents.add(
-                    Component
-                        .literal(truncateUrl(url))
-                        .withStyle(ChatFormatting.DARK_GRAY),
+            // Same pattern as Create's FilterItem: Shift expands details.
+            if (AllKeys.shiftDown()) {
+                tooltipComponents.addAll(
+                    TooltipHelper.cutStringTextComponent(url, FontHelper.Palette.GRAY_AND_WHITE),
                 )
             } else {
                 tooltipComponents.add(
-                    Component
-                        .translatable("create_resonance.tooltips.item.resonance_disc.url_hint")
-                        .withStyle(ChatFormatting.DARK_GRAY),
+                    TooltipHelper.holdShift(FontHelper.Palette.STANDARD_CREATE, false),
                 )
             }
         } else {

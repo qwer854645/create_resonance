@@ -153,9 +153,10 @@ class MidiTableBehaviour(
     override fun canExtractHeldByAutomation(): Boolean = false
 
     override fun processData(input: TransportedItemStack): ItemStack {
-        val stack = input.stack
-        if (!hasConfiguredMidi()) return stack
-        MidiRollUtilities.writeMidi(stack, midiBytes, midiName)
+        if (!hasConfiguredMidi()) return input.stack
+        // Imprint one roll from a blank stack; leftovers stay on the pad.
+        val one = input.stack.split(1)
+        MidiRollUtilities.writeMidi(one, midiBytes, midiName)
         val level = blockEntity.level
         if (level != null && !level.isClientSide) {
             level.playSound(
@@ -167,7 +168,7 @@ class MidiTableBehaviour(
                 0.95f,
             )
         }
-        return stack
+        return one
     }
 
     override fun write(

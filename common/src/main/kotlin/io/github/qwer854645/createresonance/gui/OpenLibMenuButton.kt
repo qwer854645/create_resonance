@@ -23,13 +23,14 @@ import org.apache.commons.lang3.mutable.MutableObject
 import java.util.function.Consumer
 
 /**
- * Title / pause menu entry for Create: Resonance.
+ * Title / pause menu entry for Create: Resonance (same injection pattern as Create's goggles button).
  *
  * FancyMenu:
- * - Stable locator message (language-independent): `create_resonance:menu_open`
- * - Opens screen id: `io.github.qwer854645.createresonance.gui.ResonanceMenuScreen`
- * - Disable injection: set `mainMenuLibButtonRow` / `ingameMenuLibButtonRow` to 0, then add your own
- *   FancyMenu button with Open Screen / Mimic on this widget if desired.
+ * - Must be added **synchronously** in [ScreenEvent.Init.Post] (not via async EventBus flows),
+ *   otherwise FancyMenu finishes widget discovery before this button exists.
+ * - Stable FancyMenu id via [UniqueWidget.setWidgetIdentifierFancyMenu]: [WIDGET_ID]
+ * - Opens: `io.github.qwer854645.createresonance.gui.ResonanceMenuScreen`
+ * - Disable injection: `mainMenuLibButtonRow` / `ingameMenuLibButtonRow` = 0
  */
 class OpenLibMenuButton(
     x: Int,
@@ -39,13 +40,15 @@ class OpenLibMenuButton(
         y,
         20,
         20,
-        // Stable id for FancyMenu across languages; icon is drawn instead of this text.
+        // Language-independent message (also used as fallback locator).
         Component.literal(WIDGET_ID),
         OnPress { click(it) },
         DEFAULT_NARRATION,
     ) {
     init {
         tooltip = Tooltip.create(Component.translatable("create_resonance.gui.main_menu.open_btn"))
+        // FancyMenu mixes UniqueWidget into AbstractWidget — set a stable universal id.
+        FancyMenuWidgetIds.apply(this, WIDGET_ID)
     }
 
     override fun renderString(
@@ -93,9 +96,34 @@ class OpenLibMenuButton(
     }
 }
 
+/**
+ * Soft-call FancyMenu's UniqueWidget API without a hard dependency.
+ * Create/Quark buttons are discoverable because they are added during Init.Post;
+ * a stable id additionally keeps layouts working when position anchors move.
+ */
+internal object FancyMenuWidgetIds {
+    fun apply(
+        widget: AbstractWidget,
+        id: String,
+    ) {
+        try {
+            val method =
+                widget.javaClass.methods.firstOrNull {
+                    it.name == "setWidgetIdentifierFancyMenu" && it.parameterCount == 1
+                } ?: return
+            method.invoke(widget, id)
+        } catch (_: Throwable) {
+        }
+    }
+}
+
 object MainMenuHandler : CommonGuiEventHandler {
     override fun setupEvents() {
-        EventBus.onMcMain<ClientEvents.ScreenEvent.Init> { event ->
+        // CRITICAL: use onSync, not onMcMain.
+        // onMcMain posts through a SharedFlow + coroutine and adds the button *after*
+        // ScreenEvent.Init.Post returns — FancyMenu has already finished discovering widgets.
+        // Create's OpenCreateMenuButton / Quark's QButton add synchronously in Init.Post.
+        EventBus.onSync<ClientEvents.ScreenEvent.Init> { event ->
             val screen = event.screen
 
             val menu: List<MenuRows.SingleMenuRow>
@@ -114,17 +142,17 @@ object MainMenuHandler : CommonGuiEventHandler {
                     offsetX = ModConfigs.client.ingameMenuLibButtonOffsetX.get()
                 }
 
-                else -> return@onMcMain
+                else -> return@onSync
             }
 
             // Row 0 = disabled so FancyMenu can own the entire title/pause layout.
-            if (rowIdx == 0) return@onMcMain
+            if (rowIdx == 0) return@onSync
 
             val onLeft = offsetX < 0
             val keys = if (onLeft) menu.leftTextKeys() else menu.rightTextKeys()
-            if (rowIdx < 1 || rowIdx > keys.size) return@onMcMain
+            if (rowIdx < 1 || rowIdx > keys.size) return@onSync
             val targetMessage = I18n.get(keys[rowIdx - 1])
-            if (targetMessage.isBlank()) return@onMcMain
+            if (targetMessage.isBlank()) return@onSync
 
             val toAdd = MutableObject<GuiEventListener>(null)
             event.listenerList

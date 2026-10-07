@@ -13,7 +13,7 @@ object ModItems : CommonRegistry {
 
     val WEBDISC: ItemEntry<ResonanceDiscItem> =
         ModRegistrate
-            .item("resonance_disc") { ResonanceDiscItem(Item.Properties().stacksTo(1)) }
+            .item("resonance_disc") { ResonanceDiscItem(Item.Properties().stacksTo(64)) }
             .lang("Resonance Disc")
             .model { ctx, prov ->
                 prov.generated(ctx, prov.modLoc("item/resonance_disc_blank/base"))
@@ -21,7 +21,7 @@ object ModItems : CommonRegistry {
 
     val MIDI_ROLL: ItemEntry<MidiRollItem> =
         ModRegistrate
-            .item("midi_roll") { MidiRollItem(Item.Properties().stacksTo(1)) }
+            .item("midi_roll") { MidiRollItem(Item.Properties().stacksTo(64)) }
             .lang("Score")
             .model { ctx, prov ->
                 // Reuse disc blank sheet look until a dedicated roll texture exists

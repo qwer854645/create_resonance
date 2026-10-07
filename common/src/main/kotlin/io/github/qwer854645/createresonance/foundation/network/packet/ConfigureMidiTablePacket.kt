@@ -5,6 +5,7 @@ import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
 import io.github.qwer854645.createresonance.content.midi.MidiLimits
 import io.github.qwer854645.createresonance.content.midi.MidiTableBlockEntity
+import io.github.qwer854645.createresonance.content.midi.PlayerMidiLibrary
 import net.minecraft.core.BlockPos
 import net.minecraft.sounds.SoundEvents
 import net.minecraft.sounds.SoundSource
@@ -13,7 +14,8 @@ import javax.sound.midi.MidiSystem
 
 /**
  * Uploads a MIDI file once onto the imprint table. Subsequent blank rolls are stamped
- * automatically while the table has kinetic speed.
+ * automatically while the table has kinetic speed. Also caches into the sender's
+ * per-player server library.
  */
 @Serializable
 class ConfigureMidiTablePacket(
@@ -33,7 +35,8 @@ class ConfigureMidiTablePacket(
 
         val be = world.getBlockEntity(blockPos) as? MidiTableBlockEntity ?: return false
         if (!be.canPlayerUse(sender)) return false
-        val name = displayName.take(64).ifBlank { "MIDI" }
+        val name = PlayerMidiLibrary.sanitizeName(displayName)
+        PlayerMidiLibrary.put(sender.server, sender.uuid, name, midiBytes)
         if (!be.configureMidi(midiBytes, name)) return false
 
         world.playSound(

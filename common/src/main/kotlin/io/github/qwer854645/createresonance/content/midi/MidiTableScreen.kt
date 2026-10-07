@@ -6,7 +6,7 @@ import com.simibubi.create.foundation.gui.widget.Label
 import com.simibubi.create.foundation.gui.widget.ScrollInput
 import com.simibubi.create.foundation.gui.widget.SelectionScrollInput
 import io.github.qwer854645.createresonance.audio.midi.MidiEngine
-import io.github.qwer854645.createresonance.foundation.network.packet.ConfigureMidiTablePacket
+import io.github.qwer854645.createresonance.foundation.network.packet.ConfigureMidiTableFromLibraryPacket
 import io.github.qwer854645.createresonance.foundation.registry.ModBlocks
 import io.github.qwer854645.createresonance.foundation.registry.ModPackets
 import io.github.qwer854645.createresonance.gui.ResonanceGuiStyle
@@ -17,11 +17,10 @@ import net.minecraft.client.gui.GuiGraphics
 import net.minecraft.network.chat.CommonComponents
 import net.minecraft.network.chat.Component
 import net.minecraft.world.item.ItemStack
-import java.io.File
 
 /**
- * Side-config screen: pick a .mid once; the kinetic depot stamps blank rolls automatically.
- * Visual language matches [MusicBoxScreen] parchment panels.
+ * Side-config screen: pick from the server MIDI library (own tracks first, then others).
+ * Syncs on open and on refresh — not continuously while the screen stays open.
  */
 class MidiTableScreen(
     private val be: MidiTableBlockEntity,
@@ -50,16 +49,24 @@ class MidiTableScreen(
     private lateinit var confirmButton: IconButton
     private lateinit var folderButton: IconButton
     private lateinit var refreshButton: IconButton
-    /** Full paths kept for upload; scroll options use truncated display names. */
-    private var midiFiles: List<File> = emptyList()
+
+    private var tracks: List<MidiLibraryClient.Track> = emptyList()
     private var displayNames: List<Component> = emptyList()
+
+    private val libraryListener: (List<MidiLibraryClient.Track>) -> Unit = { received ->
+        minecraft?.execute {
+            if (minecraft?.screen !== this) return@execute
+            applyServerList(received)
+        }
+    }
 
     override fun init() {
         setWindowSize(GUI_WIDTH, GUI_HEIGHT)
         super.init()
         clearWidgets()
-        refreshFileList()
-        buildFileWidgets()
+        MidiLibraryClient.addListener(libraryListener)
+        applyServerList(MidiLibraryClient.tracks)
+        MidiLibraryClient.syncLocalToServer()
 
         val x = guiLeft
         val y = guiTop
@@ -72,22 +79,30 @@ class MidiTableScreen(
         addRenderableWidget(folderButton)
 
         refreshButton = IconButton(x + 30, y + 66, AllIcons.I_REFRESH)
-        refreshButton.withCallback<IconButton> { rebuildFileWidgets() }
+        refreshButton.withCallback<IconButton> {
+            MidiLibraryClient.syncLocalToServer()
+        }
         refreshButton.setToolTip(refreshTooltip)
         addRenderableWidget(refreshButton)
 
         confirmButton = IconButton(x + GUI_WIDTH - 28, y + 66, AllIcons.I_CONFIRM)
-        confirmButton.withCallback<IconButton> { uploadSelectedFile() }
+        confirmButton.withCallback<IconButton> { configureFromLibrary() }
         confirmButton.setToolTip(confirmTooltip)
         addRenderableWidget(confirmButton)
     }
 
-    private fun refreshFileList() {
-        midiFiles = MidiEngine.listImportFiles()
+    override fun removed() {
+        MidiLibraryClient.removeListener(libraryListener)
+        super.removed()
+    }
+
+    private fun applyServerList(received: List<MidiLibraryClient.Track>) {
+        tracks = received
         displayNames =
-            midiFiles.map { file ->
-                Component.literal(ResonanceGuiStyle.ellipsize(file.name, LABEL_MAX_W))
+            received.map { track ->
+                Component.literal(ResonanceGuiStyle.ellipsize(track.label(), LABEL_MAX_W))
             }
+        buildFileWidgets()
     }
 
     private fun buildFileWidgets() {
@@ -110,27 +125,19 @@ class MidiTableScreen(
                     .writingTo(filesLabel) as ScrollInput
             addRenderableWidget(filesArea!!)
             addRenderableWidget(filesLabel)
-            // Keep label clipped even if SelectionScrollInput writes a long string later.
             filesLabel.setTextAndTrim(displayNames[0], true, LABEL_MAX_W)
         }
     }
 
-    private fun rebuildFileWidgets() {
-        refreshFileList()
-        buildFileWidgets()
-    }
-
-    private fun uploadSelectedFile() {
-        if (filesArea == null || midiFiles.isEmpty()) return
-        val index = filesArea!!.state.coerceIn(0, midiFiles.lastIndex)
-        val file = midiFiles[index]
-        val bytes = file.readBytes()
-        if (bytes.size > MidiEngine.MAX_MIDI_BYTES) return
+    private fun configureFromLibrary() {
+        if (filesArea == null || tracks.isEmpty()) return
+        val index = filesArea!!.state.coerceIn(0, tracks.lastIndex)
+        val track = tracks[index]
         ModPackets.sendToServer(
-            ConfigureMidiTablePacket(
+            ConfigureMidiTableFromLibraryPacket(
                 blockPos = be.blockPos,
-                midiBytes = bytes,
-                displayName = file.nameWithoutExtension,
+                ownerUuid = track.ownerId.toString(),
+                displayName = track.name,
             ),
         )
         onClose()
@@ -139,9 +146,8 @@ class MidiTableScreen(
     override fun tick() {
         super.tick()
         if (::confirmButton.isInitialized) {
-            confirmButton.active = filesArea != null && midiFiles.isNotEmpty()
+            confirmButton.active = filesArea != null && tracks.isNotEmpty()
         }
-        // Re-trim every tick in case the scroll input rewrote the label with a long option.
         if (::filesLabel.isInitialized && filesArea != null && displayNames.isNotEmpty()) {
             val idx = filesArea!!.state.coerceIn(0, displayNames.lastIndex)
             filesLabel.setTextAndTrim(displayNames[idx], true, LABEL_MAX_W)

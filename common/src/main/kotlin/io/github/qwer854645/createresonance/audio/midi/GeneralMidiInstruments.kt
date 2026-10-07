@@ -2,12 +2,21 @@ package io.github.qwer854645.createresonance.audio.midi
 
 import net.minecraft.network.chat.Component
 
-/** General MIDI program numbers (0–127) for music-box instrument override. */
+/**
+ * General MIDI program numbers (0–127) for music-box instrument override,
+ * plus [SCORE_PROGRAM] to keep each channel's instruments from the MIDI file.
+ */
 object GeneralMidiInstruments {
     const val COUNT = 128
 
+    /** Sentinel: play with Program Changes / banks written in the score. */
+    const val SCORE_PROGRAM = -1
+
     /** Default: GM Music Box — fits the block theme. */
     const val DEFAULT_PROGRAM = 10
+
+    /** Cycle length including score-native mode. */
+    const val CYCLE_COUNT = COUNT + 1
 
     private val ENGLISH =
         arrayOf(
@@ -47,9 +56,31 @@ object GeneralMidiInstruments {
 
     fun clamp(program: Int): Int = program.coerceIn(0, COUNT - 1)
 
-    fun englishName(program: Int): String = ENGLISH[clamp(program)]
+    fun isScoreNative(program: Int): Boolean = program < 0
+
+    /** Normalize stored value: negative → score mode, else GM 0–127. */
+    fun normalize(program: Int): Int = if (program < 0) SCORE_PROGRAM else clamp(program)
+
+    /**
+     * Cycle through score-native mode and GM programs 0–127.
+     * Order: Score ↔ 0 ↔ 1 ↔ … ↔ 127 ↔ Score …
+     */
+    fun cycle(
+        current: Int,
+        delta: Int,
+    ): Int {
+        val idx = if (isScoreNative(current)) 0 else clamp(current) + 1
+        val next = (idx + delta).mod(CYCLE_COUNT)
+        return if (next == 0) SCORE_PROGRAM else next - 1
+    }
+
+    fun englishName(program: Int): String =
+        if (isScoreNative(program)) "Score instruments" else ENGLISH[clamp(program)]
 
     fun displayName(program: Int): Component {
+        if (isScoreNative(program)) {
+            return Component.translatable("create_resonance.gui.music_box.instrument_score")
+        }
         val id = clamp(program)
         return Component.translatableWithFallback(
             "create_resonance.midi.instrument.$id",
