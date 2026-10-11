@@ -9,6 +9,9 @@ import io.github.qwer854645.createresonance.audio.midi.MidiEngine
 import io.github.qwer854645.createresonance.foundation.network.packet.MusicBoxActionPacket
 import io.github.qwer854645.createresonance.foundation.registry.ModPackets
 import io.github.qwer854645.createresonance.audio.midi.MidiPlayerInstance
+import io.github.qwer854645.createresonance.audio.midi.advancePlaybackHead
+import io.github.qwer854645.createresonance.audio.midi.playbackClockRate
+import io.github.qwer854645.createresonance.audio.midi.playbackHasEnded
 import io.github.qwer854645.createresonance.audio.midi.rpmToTempoFactor
 import io.github.qwer854645.createresonance.content.midi.MidiLimits
 import io.github.qwer854645.createresonance.content.midi.MidiRollUtilities
@@ -80,6 +83,11 @@ class MusicBoxBlockEntity(
             ensembleMode = mode
             behaviours.add(mode)
         }
+    }
+
+    override fun onSpeedChanged(previousSpeed: Float) {
+        super.onSpeedChanged(previousSpeed)
+        if (::behaviour.isInitialized) behaviour.onPlaybackSpeedChanged()
     }
 
     private fun onEnsembleModeChanged() {
@@ -393,6 +401,7 @@ class MusicBoxBehaviour(
     // Conductor-authoritative ensemble timeline (server). Prevents drift on rapid ops.
     private var ensembleClockSeconds: Double = 0.0
     private var ensembleClockGameTime: Long = 0L
+    private var ensembleClockRate: Double = 0.0
     private var ensembleEpoch: Int = 0
     private var lastAppliedEnsembleEpoch: Int = 0
     private var ensembleSyncDirty: Boolean = false
@@ -797,9 +806,20 @@ class MusicBoxBehaviour(
         }
         // Solo + conductor share this timeline so natural end / arms stay authoritative.
         if (!playing) return ensembleClockSeconds
-        val dt = (level.gameTime - ensembleClockGameTime).coerceAtLeast(0L) / 20.0
-        val tempo = rpmToTempoFactor(be.speed).toDouble()
-        return (ensembleClockSeconds + dt * tempo).coerceAtLeast(0.0)
+        return advancePlaybackHead(ensembleClockSeconds, ensembleClockGameTime, level.gameTime, ensembleClockRate, playing)
+    }
+
+    fun onPlaybackSpeedChanged() {
+        // Integrate the old rate before adopting the new one; never apply a new RPM
+        // retroactively to all the time since the last seek/pause.
+        if (role == MusicBoxRole.SECTION && !isConductorBlock) return
+        freezeEnsembleClock()
+        ensembleClockRate = playbackClockRate(be.speed)
+        if (be.level?.isClientSide == false) {
+            if (isConductorBlock) queueEnsembleSync(ensembleClockSeconds, restart = false)
+            be.sendData()
+            be.setChanged()
+        }
     }
 
     private fun freezeEnsembleClock() {
@@ -810,6 +830,7 @@ class MusicBoxBehaviour(
     private fun armEnsembleClock(seconds: Double, play: Boolean) {
         ensembleClockSeconds = seconds.coerceAtLeast(0.0)
         ensembleClockGameTime = be.level?.gameTime ?: 0L
+        ensembleClockRate = playbackClockRate(be.speed)
         playing = play
     }
 
@@ -965,6 +986,7 @@ class MusicBoxBehaviour(
         enforceRoleFromBlock()
         if (!level.isClientSide) {
             ensureUuid()
+            if (ensembleClockRate != playbackClockRate(be.speed)) onPlaybackSpeedChanged()
             if (isConductorBlock) {
                 flushEnsembleSync()
                 // Periodic clock snapshot for BE sync / GUI — sections soft-follow the conductor
@@ -1055,13 +1077,13 @@ class MusicBoxBehaviour(
                 pendingRestart = false
             }
 
-            if (playing && speed > 0f) {
+            if (playing && speed > 0f && abs(conductor.be.speed) > 0f) {
                 if (!player.playing) {
                     player.play(conductor.ensemblePositionSeconds())
                 }
                 // Occasional soft-align only — frequent syncPosition swallows notes on dense MIDI.
                 alignToEnsembleClock(player, conductor.ensemblePositionSeconds())
-            } else if (!playing || speed <= 0f) {
+            } else if (!playing || speed <= 0f || abs(conductor.be.speed) <= 0f) {
                 if (player.playing) player.pause()
                 // Stay parked on the shared pause head (at most once per tick is fine when paused).
                 player.syncPosition(conductor.ensemblePositionSeconds())
@@ -1107,7 +1129,7 @@ class MusicBoxBehaviour(
         }
     }
 
-    private fun checkNaturalEnd() {
+    fun checkNaturalEnd() {
         if (!playing) return
         if (role == MusicBoxRole.SECTION && !isConductorBlock) return
         if (durationSeconds <= 0.0) {
@@ -1116,8 +1138,7 @@ class MusicBoxBehaviour(
         // Require a real length and that playback has actually progressed.
         if (durationSeconds < 0.5) return
         val pos = ensemblePositionSeconds()
-        if (pos < 0.25) return
-        if (pos >= durationSeconds - 0.05) {
+        if (playbackHasEnded(playing, pos, durationSeconds)) {
             setPlaying(false, naturalEnd = true)
         }
     }
@@ -1213,6 +1234,7 @@ class MusicBoxBehaviour(
         // Solo + conductor: sync timeline so the GUI can show progress.
         if (isConductorBlock || role != MusicBoxRole.SECTION) {
             compound.putDouble("EnsembleClock", ensemblePositionSeconds())
+            compound.putDouble("EnsembleClockRate", ensembleClockRate)
             compound.putLong("EnsembleClockTime", be.level?.gameTime ?: ensembleClockGameTime)
             compound.putInt("EnsembleEpoch", ensembleEpoch)
         }
@@ -1309,6 +1331,7 @@ class MusicBoxBehaviour(
         if (compound.contains("EnsembleClock")) {
             ensembleClockSeconds = compound.getDouble("EnsembleClock")
             ensembleClockGameTime = compound.getLong("EnsembleClockTime")
+            ensembleClockRate = if (compound.contains("EnsembleClockRate")) compound.getDouble("EnsembleClockRate") else playbackClockRate(be.speed)
             ensembleEpoch = compound.getInt("EnsembleEpoch")
         }
         enforceRoleFromBlock()

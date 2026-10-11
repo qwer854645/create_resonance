@@ -9,16 +9,18 @@ data class MidiLibraryEntryDto(
     val ownerName: String,
     val name: String,
     val own: Boolean,
+    val hash: String = "",
 )
 
 /** Server → client: combined MIDI library (own tracks first, then others). */
 @Serializable
 class PlayerMidiLibraryPacket(
     val entries: List<MidiLibraryEntryDto>,
+    val syncId: Int = 0,
 ) : ModPacket,
     S2CPacket {
     override fun handle(context: ModPacket.Context): Boolean {
-        MidiLibraryClient.onListReceived(entries)
+        MidiLibraryClient.onListReceived(entries, syncId)
         return true
     }
 }

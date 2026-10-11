@@ -255,10 +255,11 @@ internal object SoftSynthPolyphony {
 internal class PolyphonyFanoutReceiver(
     private val banks: List<Receiver>,
 ) : Receiver {
-    private val noteBank = Array(16) { IntArray(128) { -1 } }
+    private val noteBanks = Array(16) { Array(128) { java.util.ArrayDeque<Int>() } }
     private val load = IntArray(banks.size)
     private var closed = false
 
+    @Synchronized
     override fun send(
         message: MidiMessage,
         timeStamp: Long,
@@ -279,7 +280,7 @@ internal class PolyphonyFanoutReceiver(
                                 bestLoad = load[i]
                             }
                         }
-                        noteBank[ch][note] = best
+                        noteBanks[ch][note].addLast(best)
                         load[best]++
                         banks[best].send(message, timeStamp)
                     } else {
@@ -290,6 +291,9 @@ internal class PolyphonyFanoutReceiver(
                 ShortMessage.NOTE_OFF -> {
                     release(message.channel, message.data1, message, timeStamp)
                     return
+                }
+                ShortMessage.CONTROL_CHANGE -> {
+                    if (message.data1 == 120 || message.data1 == 123) clearAssignments(message.channel)
                 }
                 else -> {
                     // Program / CC / pitch bend / pressure: keep banks aligned.
@@ -310,8 +314,7 @@ internal class PolyphonyFanoutReceiver(
         message: MidiMessage,
         timeStamp: Long,
     ) {
-        val bank = noteBank[channel][note]
-        noteBank[channel][note] = -1
+        val bank = noteBanks[channel][note].pollFirst() ?: -1
         if (bank in banks.indices) {
             load[bank] = (load[bank] - 1).coerceAtLeast(0)
             try {
@@ -329,6 +332,14 @@ internal class PolyphonyFanoutReceiver(
         }
     }
 
+    private fun clearAssignments(channel: Int) {
+        for (assignments in noteBanks[channel]) {
+            for (bank in assignments) load[bank] = (load[bank] - 1).coerceAtLeast(0)
+            assignments.clear()
+        }
+    }
+
+    @Synchronized
     override fun close() {
         closed = true
         for (bank in banks) {

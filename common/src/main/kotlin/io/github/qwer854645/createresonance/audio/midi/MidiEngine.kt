@@ -9,13 +9,11 @@ import java.io.ByteArrayInputStream
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
-import javax.sound.midi.MetaMessage
 import javax.sound.midi.MidiChannel
 import javax.sound.midi.MidiSystem
 import javax.sound.midi.Receiver
 import javax.sound.midi.Sequence
 import javax.sound.midi.Sequencer
-import javax.sound.midi.ShortMessage
 import javax.sound.midi.Soundbank
 import javax.sound.midi.Synthesizer
 import kotlin.math.abs
@@ -25,9 +23,6 @@ import kotlin.math.abs
  */
 object MidiEngine {
     const val MAX_MIDI_BYTES = MidiLimits.MAX_MIDI_BYTES
-
-    /** Melodic sink channel used when a single instrument is forced from the GUI. */
-    const val FORCED_SINK_CHANNEL = 0
 
     /** GM percussion channel — must not receive melodic program changes. */
     const val DRUM_CHANNEL = 9
@@ -99,6 +94,9 @@ class MidiPlayerInstance(
     private var auxiliarySynthesizers: List<Synthesizer> = emptyList()
     private var sequencer: Sequencer? = null
     private var sequence: Sequence? = null
+    private var stateTimeline: MidiStateTimeline? = null
+    private var routingReceiver: MidiRoutingReceiver? = null
+    private var tempoFactor: Float = 1f
 
     private fun allSynthesizers(): List<Synthesizer> = listOfNotNull(synthesizer) + auxiliarySynthesizers
 
@@ -106,7 +104,7 @@ class MidiPlayerInstance(
     var allowedChannels: Set<Int>? = null // null = all channels
         private set
 
-    /** When set, all melodic notes play with this GM program on [MidiEngine.FORCED_SINK_CHANNEL]. */
+    /** When set, each melodic channel uses this instrument while retaining its own controllers. */
     @Volatile
     var forcedProgram: Int? = null
         private set
@@ -129,11 +127,13 @@ class MidiPlayerInstance(
         return try {
             val seq = MidiSystem.getSequence(ByteArrayInputStream(midiBytes))
             sequence = seq
+            stateTimeline = MidiStateTimeline(seq)
             durationSeconds = seq.microsecondLength / 1_000_000.0
             true
         } catch (e: Exception) {
             "Invalid MIDI for $id: ${e.message}".warn()
             sequence = null
+            stateTimeline = null
             durationSeconds = 0.0
             false
         }
@@ -145,16 +145,13 @@ class MidiPlayerInstance(
         if (allowedChannels == next) return
         // Do not stop/restart the sequencer: that desyncs ensemble sections from the conductor.
         // Clearing sounding voices is enough when the part filter changes mid-play.
-        allowedChannels = next
-        softAllNotesOff()
+        routingReceiver?.reconfigure { allowedChannels = next } ?: run { allowedChannels = next }
     }
 
     fun setForcedProgram(program: Int?) {
         val next = program?.let { GeneralMidiInstruments.clamp(it) }
         if (forcedProgram == next) return
-        forcedProgram = next
-        softAllNotesOff()
-        next?.let { applyForcedProgram(it) }
+        routingReceiver?.reconfigure { forcedProgram = next } ?: run { forcedProgram = next }
     }
 
     fun play(fromSeconds: Double = 0.0) {
@@ -164,9 +161,10 @@ class MidiPlayerInstance(
             val sequ = sequencer ?: return
             sequ.sequence = seq
             val micros = (fromSeconds.coerceAtLeast(0.0) * 1_000_000).toLong().coerceAtMost(seq.microsecondLength)
-            sequ.microsecondPosition = micros
             hardSilence()
-            forcedProgram?.let { applyForcedProgram(it) }
+            sequ.microsecondPosition = micros
+            routingReceiver?.restoreState()
+            sequ.tempoFactor = tempoFactor
             sequ.start()
             playing = true
         } catch (e: Exception) {
@@ -210,7 +208,7 @@ class MidiPlayerInstance(
             }
             hardSilence()
             sequ.microsecondPosition = micros
-            forcedProgram?.let { applyForcedProgram(it) }
+            routingReceiver?.restoreState()
             if (wasPlaying) {
                 sequ.start()
                 playing = true
@@ -221,8 +219,8 @@ class MidiPlayerInstance(
     }
 
     /**
-     * Lightweight position align for ensemble soft-sync.
-     * Avoids stop/start so complex MIDIs do not glitch or drift apart while correcting.
+     * Position correction used only when ensemble drift exceeds the caller's tolerance.
+     * The sequencer is stopped before changing position to avoid receiver/pump lock inversion.
      */
     fun syncPosition(seconds: Double) {
         val seq = sequence ?: return
@@ -242,41 +240,26 @@ class MidiPlayerInstance(
             // Sub-frame nudges only skip MIDI events (lost note-offs → swallowed notes / stuck voices).
             if (abs(micros - current) < 40_000L) return // <40ms
             // Clear sounding voices before the jump so stolen polyphony and hangs do not accumulate.
-            softAllNotesOff()
-            sequ.microsecondPosition = micros
+            // RealTimeSequencer dispatches while holding its pump lock. Never take
+            // that lock from inside the receiver lock: use the stop/seek/resume path.
+            seek(seconds)
         } catch (e: Exception) {
             // Fallback to full seek if the sequencer rejects live position updates.
             seek(seconds)
         }
     }
 
-    /** All-notes-off without stopping the sequencer (used before soft position jumps). */
-    private fun softAllNotesOff() {
-        try {
-            allSynthesizers().forEach { synth ->
-                synth.channels?.forEach { ch ->
-                    try {
-                        ch.controlChange(123, 0)
-                        ch.allNotesOff()
-                    } catch (_: Exception) {
-                    }
-                }
-            }
-        } catch (_: Exception) {
-        }
-    }
-
     fun setTempoFactor(factor: Float) {
+        tempoFactor = factor.coerceIn(0.25f, 4.0f)
         try {
-            sequencer?.tempoFactor = factor.coerceIn(0.25f, 4.0f)
+            sequencer?.tempoFactor = tempoFactor
         } catch (_: Exception) {
         }
     }
 
     fun setMuted(value: Boolean) {
         if (muted == value) return
-        muted = value
-        if (value) hardSilence()
+        routingReceiver?.reconfigure { muted = value } ?: run { muted = value }
     }
 
     fun currentSeconds(): Double =
@@ -333,6 +316,7 @@ class MidiPlayerInstance(
             }
         } catch (_: Exception) {
         }
+        routingReceiver = null
         sequencer = null
         synthesizer = null
         auxiliarySynthesizers = emptyList()
@@ -364,13 +348,16 @@ class MidiPlayerInstance(
 
         val sequ = MidiSystem.getSequencer(false)
         sequ.open()
-        sequ.transmitter.receiver =
-            FilteringReceiver(
+        val receiver =
+            MidiRoutingReceiver(
                 sinkReceiver,
                 { allowedChannels },
                 { forcedProgram },
                 { muted },
+                { stateTimeline?.at(sequ.tickPosition) ?: emptyList() },
             )
+        sequ.transmitter.receiver = receiver
+        routingReceiver = receiver
         synthesizer = synth
         sequencer = sequ
     }
@@ -378,21 +365,6 @@ class MidiPlayerInstance(
     companion object {
         /** SoftSynthesizer default is 64; 1024 covers dense / multi-box MIDI with headroom. */
         const val MAX_POLYPHONY = SoftSynthPolyphony.TARGET_POLYPHONY
-    }
-
-    /** Apply the forced GM program only on the melodic sink channel. */
-    private fun applyForcedProgram(program: Int) {
-        val ch = MidiEngine.FORCED_SINK_CHANNEL
-        for (synth in allSynthesizers()) {
-            try {
-                val midiCh = synth.channels.getOrNull(ch) ?: continue
-                midiCh.controlChange(64, 0)
-                midiCh.controlChange(121, 0) // reset all controllers
-                midiCh.pitchBend = 8192
-                midiCh.programChange(program)
-            } catch (_: Exception) {
-            }
-        }
     }
 
     private fun hardSilence() {
@@ -423,93 +395,11 @@ class MidiPlayerInstance(
             }
         } catch (_: Exception) {
         }
-        // Also push through the sequencer receiver path (respects mute/filter / fan-out wiring).
+        // Bypass filters so muted/disabled channels and fan-out assignments are cleared too.
         try {
-            val receiver = sequencer?.transmitter?.receiver ?: synthesizer?.receiver ?: return
-            for (ch in 0..15) {
-                receiver.send(ShortMessage(ShortMessage.CONTROL_CHANGE, ch, 64, 0), -1)
-                receiver.send(ShortMessage(ShortMessage.CONTROL_CHANGE, ch, 123, 0), -1)
-                receiver.send(ShortMessage(ShortMessage.CONTROL_CHANGE, ch, 120, 0), -1)
-                receiver.send(ShortMessage(ShortMessage.CONTROL_CHANGE, ch, 121, 0), -1)
-            }
+            routingReceiver?.silence()
         } catch (_: Exception) {
         }
-    }
-}
-
-/**
- * When [forcedProgram] is set:
- * - Drop percussion (channel 9) — drum keys as melodic notes sound wrong.
- * - Remap every other channel onto [MidiEngine.FORCED_SINK_CHANNEL].
- * - Ignore file Program Change / bank select.
- */
-private class FilteringReceiver(
-    private val delegate: Receiver,
-    private val allowed: () -> Set<Int>?,
-    private val forcedProgram: () -> Int?,
-    private val muted: () -> Boolean,
-) : Receiver {
-    override fun send(
-        message: javax.sound.midi.MidiMessage,
-        timeStamp: Long,
-    ) {
-        if (message is MetaMessage) {
-            // Keep meta (tempo/end-of-track) flowing so the sequencer stays consistent.
-            delegate.send(message, timeStamp)
-            return
-        }
-        if (muted()) return
-        if (message !is ShortMessage) {
-            delegate.send(message, timeStamp)
-            return
-        }
-
-        val filter = allowed()
-        val cmd = message.command
-        val channel = message.channel
-
-        if (filter != null &&
-            cmd != ShortMessage.SYSTEM_RESET &&
-            cmd != ShortMessage.TIMING_CLOCK &&
-            channel !in filter
-        ) {
-            return
-        }
-
-        val program = forcedProgram()
-        if (program != null) {
-            // System realtime / reset — pass through unchanged.
-            if (cmd >= 0xF0) {
-                delegate.send(message, timeStamp)
-                return
-            }
-
-            // Percussion channel has no melodic program — skipping avoids kit glitches.
-            if (channel == MidiEngine.DRUM_CHANNEL) return
-
-            // File-driven bank/program changes fight the GUI instrument.
-            if (cmd == ShortMessage.PROGRAM_CHANGE) return
-            if (cmd == ShortMessage.CONTROL_CHANGE && (message.data1 == 0 || message.data1 == 32)) return
-
-            val remapped =
-                if (channel == MidiEngine.FORCED_SINK_CHANNEL) {
-                    message
-                } else {
-                    try {
-                        ShortMessage(cmd, MidiEngine.FORCED_SINK_CHANNEL, message.data1, message.data2)
-                    } catch (_: Exception) {
-                        return
-                    }
-                }
-            delegate.send(remapped, timeStamp)
-            return
-        }
-
-        delegate.send(message, timeStamp)
-    }
-
-    override fun close() {
-        delegate.close()
     }
 }
 

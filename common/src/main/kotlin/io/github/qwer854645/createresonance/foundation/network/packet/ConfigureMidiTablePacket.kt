@@ -3,6 +3,7 @@ package io.github.qwer854645.createresonance.foundation.network.packet
 import com.simibubi.create.foundation.utility.AdventureUtil
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
+import io.github.qwer854645.createresonance.content.midi.MidiLibraryIo
 import io.github.qwer854645.createresonance.content.midi.MidiLimits
 import io.github.qwer854645.createresonance.content.midi.MidiTableBlockEntity
 import io.github.qwer854645.createresonance.content.midi.PlayerMidiLibrary
@@ -28,25 +29,23 @@ class ConfigureMidiTablePacket(
         val sender = context.sender ?: return false
         if (sender.isSpectator || AdventureUtil.isAdventure(sender)) return false
         if (midiBytes.isEmpty() || midiBytes.size > MidiLimits.MAX_MIDI_BYTES) return false
-        runCatching { MidiSystem.getSequence(ByteArrayInputStream(midiBytes)) }.getOrNull()
-            ?: return false
-        val world = sender.level() ?: return false
+        val world = sender.level()
         if (!world.isLoaded(blockPos) || !sender.canInteractWithBlock(blockPos, 20.0)) return false
-
         val be = world.getBlockEntity(blockPos) as? MidiTableBlockEntity ?: return false
         if (!be.canPlayerUse(sender)) return false
+        val server = sender.server
         val name = PlayerMidiLibrary.sanitizeName(displayName)
-        PlayerMidiLibrary.put(sender.server, sender.uuid, name, midiBytes)
-        if (!be.configureMidi(midiBytes, name)) return false
-
-        world.playSound(
-            null,
-            blockPos,
-            SoundEvents.UI_CARTOGRAPHY_TABLE_TAKE_RESULT,
-            SoundSource.BLOCKS,
-            0.5f,
-            0.95f,
-        )
-        return true
+        return MidiLibraryIo.submit {
+            if (server.isStopped) return@submit
+            if (runCatching { MidiSystem.getSequence(ByteArrayInputStream(midiBytes)) }.isFailure) return@submit
+            if (!PlayerMidiLibrary.put(server, sender.uuid, name, midiBytes)) return@submit
+            server.execute {
+                if (server.playerList.getPlayer(sender.uuid) !== sender || sender.level() !== world) return@execute
+                if (!world.isLoaded(blockPos) || !sender.canInteractWithBlock(blockPos, 20.0)) return@execute
+                val current = world.getBlockEntity(blockPos) as? MidiTableBlockEntity ?: return@execute
+                if (!current.canPlayerUse(sender) || !current.configureMidi(midiBytes, name)) return@execute
+                world.playSound(null, blockPos, SoundEvents.UI_CARTOGRAPHY_TABLE_TAKE_RESULT, SoundSource.BLOCKS, 0.5f, 0.95f)
+            }
+        }
     }
 }

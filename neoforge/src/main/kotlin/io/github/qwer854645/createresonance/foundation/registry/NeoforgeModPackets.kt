@@ -37,7 +37,7 @@ object NeoforgeModPackets : NeoforgeRegistry {
     private val entries = mutableMapOf<KClass<out ModPacket>, PayloadEntry<*>>()
 
     fun registerPayloads(event: RegisterPayloadHandlersEvent) {
-        val registrar = event.registrar("1").optional()
+        val registrar = event.registrar("2").optional()
         ModPackets.packetClasses.forEach { registerPacket(registrar, it) }
     }
 

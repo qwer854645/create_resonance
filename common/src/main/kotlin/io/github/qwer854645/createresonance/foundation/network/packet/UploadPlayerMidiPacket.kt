@@ -3,6 +3,7 @@ package io.github.qwer854645.createresonance.foundation.network.packet
 import com.simibubi.create.foundation.utility.AdventureUtil
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.Serializable
+import io.github.qwer854645.createresonance.content.midi.MidiLibraryIo
 import io.github.qwer854645.createresonance.content.midi.MidiLimits
 import io.github.qwer854645.createresonance.content.midi.PlayerMidiLibrary
 import java.io.ByteArrayInputStream
@@ -21,9 +22,13 @@ class UploadPlayerMidiPacket(
         val sender = context.sender ?: return false
         if (sender.isSpectator || AdventureUtil.isAdventure(sender)) return false
         if (midiBytes.isEmpty() || midiBytes.size > MidiLimits.MAX_MIDI_BYTES) return false
-        runCatching { MidiSystem.getSequence(ByteArrayInputStream(midiBytes)) }.getOrNull()
-            ?: return false
+        val server = sender.server
+        val ownerId = sender.uuid
         val name = PlayerMidiLibrary.sanitizeName(displayName)
-        return PlayerMidiLibrary.put(sender.server, sender.uuid, name, midiBytes)
+        return MidiLibraryIo.submit {
+            if (server.isStopped) return@submit
+            if (runCatching { MidiSystem.getSequence(ByteArrayInputStream(midiBytes)) }.isFailure) return@submit
+            PlayerMidiLibrary.put(server, ownerId, name, midiBytes)
+        }
     }
 }

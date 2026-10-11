@@ -17,6 +17,9 @@ neoForge {
 }
 
 dependencies {
+    testImplementation(kotlin("stdlib"))
+    testImplementation("org.junit.jupiter:junit-jupiter:5.11.4")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.11.4")
 
     compileOnly("org.tukaani:xz:1.11")
     compileOnly("org.spongepowered:mixin:0.8.5")
@@ -33,6 +36,10 @@ dependencies {
         exclude(group = "fuzs.forgeconfigapiport", module = "forgeconfigapiport-common-neoforgeapi")
     }
 }
+
+// Playback regressions run without a Minecraft client or an audio output device.
+tasks.named<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>("compileTestKotlin") { enabled = true }
+tasks.named<Test>("test") { useJUnitPlatform() }
 
 configurations.create("commonJava") {
     isCanBeResolved = false

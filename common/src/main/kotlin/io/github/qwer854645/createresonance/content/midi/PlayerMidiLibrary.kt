@@ -5,6 +5,11 @@ import net.minecraft.world.level.storage.LevelResource
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.attribute.BasicFileAttributes
+import java.nio.file.attribute.FileTime
+import java.util.concurrent.ConcurrentHashMap
 import java.security.MessageDigest
 import java.util.UUID
 
@@ -18,6 +23,9 @@ import java.util.UUID
 object PlayerMidiLibrary {
     const val MAX_ENTRIES = 64
 
+    private data class Fingerprint(val size: Long, val modified: FileTime, val hash: String)
+    private val fingerprints = ConcurrentHashMap<Path, Fingerprint>()
+
     data class Entry(
         val name: String,
         val size: Int,
@@ -30,6 +38,7 @@ object PlayerMidiLibrary {
         val ownerName: String,
         val name: String,
         val own: Boolean,
+        val hash: String = "",
     )
 
     fun midiRoot(server: MinecraftServer): Path =
@@ -53,6 +62,7 @@ object PlayerMidiLibrary {
     fun list(
         server: MinecraftServer,
         playerId: UUID,
+        includeHashes: Boolean = true,
     ): List<Entry> {
         val dir = playerDir(server, playerId)
         if (!Files.isDirectory(dir)) return emptyList()
@@ -61,12 +71,22 @@ object PlayerMidiLibrary {
                 stream
                     .filter { Files.isRegularFile(it) && it.fileName.toString().endsWith(".mid", true) }
                     .map { path ->
-                        val name = path.fileName.toString().removeSuffix(".mid").removeSuffix(".MID")
-                        val bytes = runCatching { Files.readAllBytes(path) }.getOrNull()
-                        if (bytes == null || bytes.isEmpty() || bytes.size > MidiLimits.MAX_MIDI_BYTES) {
+                        val name = path.fileName.toString().dropLast(4)
+                        val attrs = runCatching { Files.readAttributes(path, BasicFileAttributes::class.java) }.getOrNull()
+                        if (attrs == null || attrs.size() <= 0 || attrs.size() > MidiLimits.MAX_MIDI_BYTES) {
                             null
                         } else {
-                            Entry(name, bytes.size, sha1Hex(bytes))
+                            val hash = if (!includeHashes) "" else {
+                                val cached = fingerprints[path]
+                                if (cached != null && cached.size == attrs.size() && cached.modified == attrs.lastModifiedTime()) {
+                                    cached.hash
+                                } else {
+                                    val bytes = runCatching { Files.readAllBytes(path) }.getOrNull()
+                                        ?: return@map null
+                                    sha256Hex(bytes).also { fingerprints[path] = Fingerprint(attrs.size(), attrs.lastModifiedTime(), it) }
+                                }
+                            }
+                            Entry(name, attrs.size().toInt(), hash)
                         }
                     }.toList()
                     .filterNotNull()
@@ -87,7 +107,7 @@ object PlayerMidiLibrary {
         val root = midiRoot(server)
         if (!Files.isDirectory(root)) {
             return list(server, viewerId).map {
-                ListedTrack(viewerId, resolvePlayerName(server, viewerId), it.name, true)
+                ListedTrack(viewerId, "", it.name, true, it.hash)
             }
         }
         val ownerIds =
@@ -104,17 +124,17 @@ object PlayerMidiLibrary {
                 listOf(viewerId)
             }.ifEmpty { listOf(viewerId) }
 
-        val ownName = resolvePlayerName(server, viewerId)
+        val ownName = ""
         val own =
             list(server, viewerId).map { entry ->
-                ListedTrack(viewerId, ownName, entry.name, true)
+                ListedTrack(viewerId, ownName, entry.name, true, entry.hash)
             }
         val others =
             ownerIds
                 .filter { it != viewerId }
                 .flatMap { ownerId ->
-                    val ownerName = resolvePlayerName(server, ownerId)
-                    list(server, ownerId).map { entry ->
+                    val ownerName = ""
+                    list(server, ownerId, includeHashes = false).map { entry ->
                         ListedTrack(ownerId, ownerName, entry.name, false)
                     }
                 }.sortedWith(
@@ -148,6 +168,8 @@ object PlayerMidiLibrary {
         val name = sanitizeName(displayName)
         val path = playerDir(server, playerId).resolve("$name.mid")
         if (!Files.isRegularFile(path)) return null
+        val size = runCatching { Files.size(path) }.getOrNull() ?: return null
+        if (size <= 0 || size > MidiLimits.MAX_MIDI_BYTES) return null
         val bytes = runCatching { Files.readAllBytes(path) }.getOrNull() ?: return null
         if (bytes.isEmpty() || bytes.size > MidiLimits.MAX_MIDI_BYTES) return null
         return bytes
@@ -172,10 +194,10 @@ object PlayerMidiLibrary {
             return false
         }
         val path = dir.resolve("$name.mid")
-        val newHash = sha1Hex(bytes)
+        val newHash = sha256Hex(bytes)
         if (Files.isRegularFile(path)) {
             val existing = runCatching { Files.readAllBytes(path) }.getOrNull()
-            if (existing != null && sha1Hex(existing) == newHash) return true
+            if (existing != null && sha256Hex(existing) == newHash) return true
         } else {
             val count =
                 try {
@@ -189,16 +211,26 @@ object PlayerMidiLibrary {
                 }
             if (count >= MAX_ENTRIES) return false
         }
+        var temporary: Path? = null
         return try {
-            Files.write(path, bytes)
+            temporary = Files.createTempFile(dir, ".upload-", ".tmp")
+            Files.write(temporary, bytes)
+            try {
+                Files.move(temporary, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING)
+            }
+            fingerprints.remove(path)
             true
         } catch (_: IOException) {
             false
+        } finally {
+            temporary?.let { runCatching { Files.deleteIfExists(it) } }
         }
     }
 
-    private fun sha1Hex(bytes: ByteArray): String {
-        val digest = MessageDigest.getInstance("SHA-1").digest(bytes)
+    private fun sha256Hex(bytes: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
         return digest.joinToString("") { "%02x".format(it) }
     }
 }

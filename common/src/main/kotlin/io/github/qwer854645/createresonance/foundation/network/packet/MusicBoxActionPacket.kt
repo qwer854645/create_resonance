@@ -55,9 +55,9 @@ class MusicBoxActionPacket(
                 behaviour.restart()
             }
             "finished" -> {
-                // Client-detected MIDI end — stop and unlock arm extract.
+                // Client completion is only a hint; the server clock decides when arms may extract.
                 if (behaviour.role == MusicBoxRole.SECTION) return false
-                if (behaviour.playing) behaviour.setPlaying(false, naturalEnd = true)
+                behaviour.checkNaturalEnd()
             }
             "resync_midi" -> {
                 // Client lost its MidiBytes cache while the server still has HasMidi=true.

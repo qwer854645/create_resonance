@@ -65,7 +65,7 @@ class MidiTableScreen(
         super.init()
         clearWidgets()
         MidiLibraryClient.addListener(libraryListener)
-        applyServerList(MidiLibraryClient.tracks)
+        applyServerList(MidiLibraryClient.tracksForCurrentConnection())
         MidiLibraryClient.syncLocalToServer()
 
         val x = guiLeft

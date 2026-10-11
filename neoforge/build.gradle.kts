@@ -104,6 +104,7 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
 }
 
 tasks.named<ProcessResources>("processResources") {
+    inputs.property("modVersion", project.version.toString())
     from(commonProject.sourceSets["main"].resources)
     from(rootProject.file("LICENSE.MD")) { into("META-INF") }
     from(rootProject.file("NOTICE.MD")) { into("META-INF") }
